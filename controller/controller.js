@@ -42,7 +42,7 @@ exports.getTickerPriceForSocket = async (data) => {//Socket API
           //   "price" : Number(item?.price).toFixed(4),
           //   "volume" : Number(_1dKline?.data[0][7]).toFixed(4),
           // })
-          if(  Math.abs((Number(_3mKline.data[0][4]) - Number(_3mKline.data[0][1])) * 100 / Number(_3mKline.data[0][1])) >= 2 ) {//price increase or decrease rate is bigger than 0.1 or less than 0.1.
+          if(  Math.abs((Number(_3mKline.data[0][4]) - Number(_3mKline.data[0][1])) * 100 / Number(_3mKline.data[0][1])) >= 0.2 ) {//price increase or decrease rate is bigger than 0.1 or less than 0.1.
 
             const _1hKline = await axios.get(`https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1h&limit=1`, {// High and Low price during 1 hour
               'Content-Type': 'application/json'
