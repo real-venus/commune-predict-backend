@@ -1,32 +1,26 @@
-const controller = require('./controller/controller');
 const websocekt = require('./ws');
+const websocektKline = require('./websocket_klines');
 
-let token3min;
-let realTimeTokens;
+let token1min = {};
+let realTimeTokens = {}; 
 const getData = (data) => {
-    token3min = data;
+    token1min = data;
 }
 
 const getRealData = (data) => {
-    // console.log(data.realTimeData.length);
     realTimeTokens = data;
 }
 
 websocekt.getRealTimeData(getRealData);
-
-controller.getTickerPriceForSocket(getData);
-setInterval(() => {
-    controller.getTickerPriceForSocket(getData);
-}, 15000);
-
+websocektKline.getRealTimeData(getData);
 
 exports = module.exports = server = (io) => {
     io.on('connection', (socket) => {
         console.log(`--- A socket ${socket.id} connected! ---`);
         
-        socket.emit('token3min', token3min);
+        socket.emit('token1min', token1min);
         setInterval(() => {
-            socket.emit('token3min', token3min);
+            socket.emit('token1min', token1min);
         }, 5000);
 
         setInterval(() => {
