@@ -1,97 +1,201 @@
 const axios = require('axios');
+
 exports.getRealTimeData =async (getData) => {
 
-  //----------first request for total ticker that is between 0.01 and 2 and more than 1 million. this is called once-------------------//
-  var realTimeData = [];
-  const tickerPriceList = await axios.get('https://fapi.binance.com/fapi/v2/ticker/price');
-  const tokensBetween = tickerPriceList.data.filter(item => Number(item.price) >= 0.01 && Number(item.price) <= 2);// tokens between 0.01~2
+  var longTokens = {};
+  var shortTokens = {};
+  var history = [];
 
-  await Promise.all(tokensBetween.map(async (item) => {
-    const _1dKline = await axios.get(`https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`, {//kline per ticker
-          'Content-Type': 'application/json'
-        });
-    if (Number(_1dKline.data[0][7]) >= 1000000)
-    realTimeData.push({
-      'symbol': item.symbol,
-      'price' : Number(item?.price),
-      'volume': Number(_1dKline?.data[0][7]),
-    });
-  })).then(() => {
-    realTimeData.sort((a, b) => {
-      return a.symbol.charCodeAt(0) - b.symbol.charCodeAt(0);
-    })
-    getData({
-            'realTimeData' : realTimeData,
-            'status' : 'ok',
-          });
-  }).catch((error) => {
-    console.log('first request error! so realTimeData is empty');
-    realTimeData = [];
-  })
-  if(realTimeData.length > 0) {
+  const changePercent = (a, b) => {
+    return Number(( ( b - a ) * 100 / a ).toFixed(4));
+  }
 
-    //--------------receive all changed ticker per 1 second and replace it to origin realTimeData.
-    const WebSocket = require('ws');
+  //-----------------------------------------------first request for all ticker's symbols-----------------------------------------//
+  const tickerPriceList = await axios.get('https://fapi.binance.com/fapi/v2/ticker/price')
+  const tokensBetween = tickerPriceList.data.filter(item => Number(item.price) >= 0.01 && Number(item.price) <= 2);
+
+  const WebSocket = require('ws');
+  //------------------------------------------------websocket part for every ticker-----------------------------------------//
+  Promise.allSettled(tokensBetween.map(async item => {
     const websocketThread = () => {
-      var socket = new WebSocket('wss://fstream.binance.com/stream?streams=!ticker@arr'); // all changed tickers
-      socket.onopen = () => {
-        console.log('realTimeData websocket connected');
-      }
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        const miniTickers = data.data;
-        
-        Promise.all(miniTickers.map(item => {
-          if(Number(item.c) > 0.01 && Number(item.c) < 2 && Number(item.q) > 1000000) {      //  if 0.01 ~ 2
-          if(realTimeData.find((t) => t.symbol === item.s))   // if already exists, replace it.
-              realTimeData.splice(
-              realTimeData.findIndex((t) => t.symbol === item.s) 
-              , 1, 
-              {
-                'symbol': item.s,
-                'price' : Number(item.c),
-                'volume': Number(item.q),
-              });
-          else //--------------------------------------------------------------------------- if not exists, push.            
-              realTimeData.push(
-                {
-                  'symbol': item.s,
-                  'price' : Number(item.c),
-                  'volume': Number(item.q),
-                }
-              )}
+      //---------------------------------------------if data is confirm to test condition, push it.-----------------------------------------//
+      const testData = async ( data ) => {
+        if( Math.abs( changePercent( data.openPrice, data.closePrice ) ) >= 0.5 ) {
+          const kline1d = await axios.get(`https://fapi.binance.com/fapi/v1/klines?symbol=${data.symbol}&interval=1d&limit=1`)      //    a day kline
+          if( Number(kline1d?.data[0][7]) >= 1000000 ) {
+            const kline1h = await axios.get(`https://fapi.binance.com/fapi/v1/klines?symbol=${data.symbol}&interval=1h&limit=1`);   //    a hour kline
+            if( data.openPrice < data.closePrice ) {
+              putData( data, longTokens, kline1d, kline1h);
+            }
+            else {
+              putData( data, shortTokens, kline1d, kline1h);
+            }
+          }
           else {
-            if(realTimeData.find((t) => t.symbol === item.s))
-            realTimeData.splice(
-              realTimeData.findIndex((t) => t.symbol === item.s) , 1);
-          } //------------------------------------------------------------------------------- if < 0.01 or > 2, delete item.
-        }))
-        .then(() => {
-            getData({
-              'realTimeData' : realTimeData,
-              'status' : 'ok',
-            });
-        })
+            if( longTokens[`${data.symbol}`] ) 
+              delete longTokens[`${data.symbol}`];
+            if( shortTokens[`${data.symbol}`] ) 
+              delete shortTokens[`${data.symbol}`];
+          }
+        }
+        else {
+          if( longTokens[`${data.symbol}`] ) 
+            delete longTokens[`${data.symbol}`];
+          if( shortTokens[`${data.symbol}`] ) 
+            delete shortTokens[`${data.symbol}`];
+        }
       }
+      //-------------------------------------------if data is not confirm to test condition, push it.-----------------------------------------//
+      const putData = async ( item, tokens, kline1d, kline1h ) => {
+        let realdata = {};
+        realdata.symbol = item.symbol;
+        realdata.openTime = (new Date( Number( item.openTime ) )).toString().slice(4,21);
+        realdata.closeTime = (new Date( Number( item.closeTime ) )).toString().slice(4,21);
+        realdata.openPrice = item.openPrice;
+        realdata.closePrice = item.closePrice;
+        realdata.change = changePercent( item.openPrice, item.closePrice );
+        realdata.volume = Number(kline1d?.data[0][7]);
+        realdata.high = Number(kline1h?.data[0][2]);
+        realdata.low = Number(kline1h?.data[0][3]);
+        
+        //----------------------------put data to tokens-----------------------------------------//
+          tokens[`${realdata.symbol}`] = {
+            openTime: realdata.openTime,
+            openPrice: realdata.openPrice,
+            closeTime: realdata.closeTime,
+            closePrice: realdata.closePrice,
+            high: realdata.high,
+            low: realdata.low,
+            volume: realdata.volume,
+            change: realdata.change,
+          };
+          //----------------------------put data to history-----------------------------------------//
+          if( history.find(item => item.symbol.toString() === realdata.symbol.toString()) ) {
+            const index = history.findIndex(item => item.symbol.toString() === realdata.symbol.toString());
+            if( history[index].openTime.toString() === realdata.openTime.toString() ){
+              history.splice(index, 1);
+            }
+            if( history.length >= 100 ){
+              history.shift();
+            }
+            history.unshift({
+              symbol: realdata.symbol,
+              openTime: realdata.openTime,
+              openPrice: realdata.openPrice,
+              closeTime: realdata.closeTime,
+              closePrice: realdata.closePrice,
+              high: realdata.high,
+              low: realdata.low,
+              volume: realdata.volume,
+              change: realdata.change,
+            })
+          }
+          else{
+            history.unshift({
+              symbol: realdata.symbol,
+              openTime: realdata.openTime,
+              openPrice: realdata.openPrice,
+              closeTime: realdata.closeTime,
+              closePrice: realdata.closePrice,
+              high: realdata.high,
+              low: realdata.low,
+              volume: realdata.volume,
+              change: realdata.change,
+              });
+          }
+          //-----------------------------return data to server.js-----------------------------------------//
+          getData({
+            longTokens : longTokens,
+            shortTokens : shortTokens,
+            history : history,
+            status : 'ok',
+          });
+        
+      }
+
+      //---------------------------------------------websocket construction for every ticker-----------------------------------------//
+      var socket = new WebSocket(`wss://fstream.binance.com/ws/${item.symbol.toLowerCase()}@kline_1m`);
+      //---------------------------------------------websocket connection for every ticker-----------------------------------------//
+      socket.onopen = () => {
+        console.log(`${item.symbol} connect`);
+      }
+      
+      var tokenHistory;
+      var temp;
+      //---------------------------------------------websocket message handeler for every ticker-----------------------------------------//
+      socket.onmessage = (event) => {
+        const dataFromBinance = JSON.parse(event.data).k;                                        
+        const data = {
+              symbol:         dataFromBinance.s,
+              openPrice:      Number(dataFromBinance.o),
+              closePrice:     Number(dataFromBinance.c),
+              openTime:       Number(dataFromBinance.t),
+              closeTime:      Number(dataFromBinance.T) + 1,
+              // realstate:      Number(dataFromBinance.c) > Number(dataFromBinance.o) ? 'increase': (Number(dataFromBinance.c) === Number(dataFromBinance.o) ? 'constant': 'decrease'),
+              state:          Math.abs(changePercent(Number(dataFromBinance.o), Number(dataFromBinance.c))) < 0.0015 ? 'constant': ( Number(dataFromBinance.c) > Number(dataFromBinance.o) ? 'increase' : 'decrease')
+        }
+
+        if( !temp ){//------------------------------------------------------------------------------ at first, temp and tokenHistory is empty.                                                            
+          temp = data; 
+        }
+        else {
+          if( temp.openTime === data.openTime ){//-------------------------------------------------- at first, until temp is full data, overwrite temp.
+            temp = data;
+          }
+          else {//--------------------------------------------------------------------------------- after a minute, put full data into tokenHistory.
+            if(!tokenHistory){// -------------------------------------------------------------------at first, tokenHistory is empty.
+              tokenHistory = temp;
+              testData( tokenHistory );
+            }
+            else{
+              if( temp.state === 'constant' ){ //------------------------------------------------------ current state is constant.
+                tokenHistory.closeTime = temp.closeTime;//-------------------------------------------- only update closeTime.
+                tokenHistory.closePrice = temp.closePrice;// ------------------------------------------update closePrice.
+                //if
+                testData( tokenHistory );
+              }
+              else{
+                if( tokenHistory.state === 'constant' ){//--------------------------------------------- origin state is constant. modify origin state and closeTime and closePrice.
+                  tokenHistory.state = temp.state;
+                  tokenHistory.closeTime = temp.closeTime;
+                  tokenHistory.closePrice = temp.closePrice;
+                  //if
+                  testData( tokenHistory );
+                }
+                else {//-------------------------------------------------------------------------------- origin state is not constant. 
+                  if( tokenHistory.state === temp.state ){//-------------------------------------------- orign state is same with current state. modify origin closeTime and closePrice.
+                    tokenHistory.closeTime = temp.closeTime;
+                    tokenHistory.closePrice = temp.closePrice;
+                    //if
+                    testData( tokenHistory );
+                  }
+                  else {//------------------------------------------------------------------------------- orign state is not same with current state. overwrite origin data.
+                    tokenHistory = temp;
+                    //if
+                    testData( tokenHistory );
+                  }
+                }
+              }
+            }
+            temp = data;//------------------------------------------------------------------------------- put data into temp.
+          }
+        }
+      }
+      //---------------------------------------------websocket error handeler for every ticker-----------------------------------------//
       socket.onerror = error => {
-        console.log('realTimeData websocket error, so reconnect');
+        console.log(`${item.symbol} error, so reconnect`);
         socket = null;
-        getData({
-          'realTimeData' : realTimeData,
-          'status' : `realTimeData websocket error:${error.message}, so reconnecting...`,
-        });
         setTimeout(websocketThread, 1000);
       }
+      //---------------------------------------------websocket close handeler for every ticker-----------------------------------------//
       socket.onclose = () => {
-        console.log('binance websocket closed, so reconnect');
+        console.log(`${item.symbol} closed, so reconnect`);
         socket = null;
-        getData({
-          'realTimeData' : realTimeData,
-          'status' : `realTimeData websocket closed, so reconnecting...`,
-        });
         setTimeout(websocketThread, 1000);
       }
     }
+
     websocketThread();
-  }
+
+  }));
 }
