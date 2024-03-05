@@ -31,6 +31,7 @@ exports.getRealTimeData =async (getData) => {
       'status' : error,
     });
   })
+  
   //--------------receive all changed ticker per 1 second and replace it to origin realTimeData.
   const WebSocket = require('ws');
   const websocketThread = () => {
